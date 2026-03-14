@@ -15,6 +15,8 @@ _PLATFORM_ID_KEYS: dict[str, str] = {
     "mfl": "mflId",
 }
 
+SUPPORTED_PLATFORMS: list[str] = sorted(_PLATFORM_ID_KEYS)
+
 
 class FantasyCalcClient:
     """Thin wrapper around the FantasyCalc public API."""

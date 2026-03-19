@@ -14,7 +14,30 @@ For development:
 uv sync
 ```
 
+## What’s new in this CLI
+
+The CLI now emphasizes discoverability and day-to-day usability:
+
+- Strong validation for league/scoring settings, including `--ppr 0.5`
+- Clear command feedback telling you whether data came from the API or cache
+- Built-in cache controls with `--cache-ttl`, `--no-cache`, and `--refresh-cache`
+- Rich filtering and sorting for `values`
+- JSON and CSV export from both `values` and `export`
+- Exact-match search with `lookup --exact`
+- Cache maintenance via `fantasycalc cache clear`
+
 ## Usage
+
+### Discover features quickly
+
+```bash
+fantasycalc --help
+fantasycalc values --help
+fantasycalc lookup --help
+fantasycalc export --help
+fantasycalc index --help
+fantasycalc cache clear --help
+```
 
 ### Fetch current dynasty values
 
@@ -22,11 +45,17 @@ uv sync
 # Top 50 superflex dynasty values (default)
 fantasycalc values
 
-# Redraft, 1QB, PPR
-fantasycalc values --redraft --num-qbs 1
+# Redraft, 1QB, half-PPR
+fantasycalc values --redraft --num-qbs 1 --ppr 0.5
 
-# Filter by position, output as JSON
-fantasycalc values --position QB --format json --limit 10
+# Filter by position and team, sort by value descending
+fantasycalc values --position QB --team BUF --sort value --desc
+
+# Show risers in CSV format
+fantasycalc values --sort trend30Day --desc --format csv
+
+# Filter by age/value and write JSON to a file
+fantasycalc values --age-max 25 --min-value 5000 --format json --output young-stars.json
 ```
 
 ### Look up a player
@@ -34,13 +63,15 @@ fantasycalc values --position QB --format json --limit 10
 ```bash
 fantasycalc lookup --name "Patrick Mahomes"
 fantasycalc lookup --name chase --format json
+fantasycalc lookup --name "Josh Allen" --exact --format csv
 ```
 
 ### Export full values to a file
 
 ```bash
 fantasycalc export --output values.json
-fantasycalc export --output redraft.json --redraft --num-qbs 1
+fantasycalc export --output values.csv --format csv
+fantasycalc export --output redraft.json --redraft --num-qbs 1 --ppr 0.5
 ```
 
 ### Index values by platform ID
@@ -67,15 +98,30 @@ Output shape:
     "team": "BUF",
     "value": 10358,
     "fleaflickerId": "13761",
-    "sleeperId": "4984",
-    ...
+    "sleeperId": "4984"
   }
 }
 ```
 
-### JSON output schema
+### Cache controls
 
-When using `--format json`, each player row includes:
+```bash
+# Prefer cached data for 10 minutes
+fantasycalc values --cache-ttl 600
+
+# Force a fresh API request and refresh local cache
+fantasycalc values --refresh-cache
+
+# Disable cache entirely
+fantasycalc values --no-cache
+
+# Clear all cached responses
+fantasycalc cache clear
+```
+
+### JSON/CSV output schema
+
+When using `--format json` or `--format csv`, each player row includes:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -95,14 +141,17 @@ When using `--format json`, each player row includes:
 | `trend30Day` | number/null | 30-day value trend |
 | `displayTrend` | string/null | Trend display label |
 
-### Options available on all fetch commands
+### Core options available on fetch commands
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dynasty / --redraft` | dynasty | Dynasty or redraft values |
-| `--num-qbs` | 2 | Starting QBs (2 = superflex) |
-| `--num-teams` | 12 | League size |
-| `--ppr` | 1 | Points per reception |
+| `--num-qbs` | 2 | Starting QBs (`1` or `2`) |
+| `--num-teams` | 12 | League size (`2` to `32`) |
+| `--ppr` | 1 | Points per reception (`0`, `0.5`, or `1`) |
+| `--cache-ttl` | 300 | Reuse cached values newer than this many seconds |
+| `--use-cache / --no-cache` | use-cache | Enable or disable cache reads/writes |
+| `--refresh-cache` | off | Bypass cache reads and refresh from the API |
 
 ## Development
 

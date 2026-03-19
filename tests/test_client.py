@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import requests
 import responses
 
-from fantasycalc_cli.client import BASE_URL, FantasyCalcClient
+from fantasycalc_cli.client import (
+    BASE_URL,
+    FantasyCalcCache,
+    FantasyCalcClient,
+    FantasyCalcRequestError,
+)
 
 # ------------------------------------------------------------------
 # Sample data
@@ -66,13 +74,52 @@ SAMPLE_VALUES: list[dict] = [
 
 
 # ------------------------------------------------------------------
+# Cache
+# ------------------------------------------------------------------
+
+
+class TestFantasyCalcCache:
+    def test_save_and_load(self, tmp_path: Path):
+        cache = FantasyCalcCache(tmp_path)
+        cache.save(
+            is_dynasty=True,
+            num_qbs=2,
+            num_teams=12,
+            ppr=1,
+            values=SAMPLE_VALUES,
+        )
+
+        loaded = cache.load(
+            is_dynasty=True,
+            num_qbs=2,
+            num_teams=12,
+            ppr=1,
+            ttl=60,
+        )
+        assert loaded == SAMPLE_VALUES
+
+    def test_clear(self, tmp_path: Path):
+        cache = FantasyCalcCache(tmp_path)
+        cache.save(
+            is_dynasty=True,
+            num_qbs=2,
+            num_teams=12,
+            ppr=1,
+            values=SAMPLE_VALUES,
+        )
+        removed = cache.clear()
+        assert removed == 1
+        assert list(tmp_path.glob("*.json")) == []
+
+
+# ------------------------------------------------------------------
 # fetch_values
 # ------------------------------------------------------------------
 
 
 class TestFetchValues:
     @responses.activate
-    def test_fetch_values_default_params(self):
+    def test_fetch_values_default_params(self, tmp_path: Path):
         responses.add(
             responses.GET,
             f"{BASE_URL}/values/current",
@@ -80,10 +127,11 @@ class TestFetchValues:
             status=200,
         )
 
-        client = FantasyCalcClient()
-        result = client.fetch_values()
+        client = FantasyCalcClient(cache=FantasyCalcCache(tmp_path))
+        result, source = client.fetch_values()
 
         assert result == SAMPLE_VALUES
+        assert source == "api"
         assert len(responses.calls) == 1
         req = responses.calls[0].request
         assert "isDynasty=true" in req.url
@@ -92,7 +140,7 @@ class TestFetchValues:
         assert "ppr=1" in req.url
 
     @responses.activate
-    def test_fetch_values_redraft(self):
+    def test_fetch_values_redraft(self, tmp_path: Path):
         responses.add(
             responses.GET,
             f"{BASE_URL}/values/current",
@@ -100,10 +148,11 @@ class TestFetchValues:
             status=200,
         )
 
-        client = FantasyCalcClient()
-        result = client.fetch_values(is_dynasty=False, num_qbs=1, num_teams=10, ppr=0)
+        client = FantasyCalcClient(cache=FantasyCalcCache(tmp_path))
+        result, source = client.fetch_values(is_dynasty=False, num_qbs=1, num_teams=10, ppr=0)
 
         assert result == []
+        assert source == "api"
         req = responses.calls[0].request
         assert "isDynasty=false" in req.url
         assert "numQbs=1" in req.url
@@ -111,7 +160,49 @@ class TestFetchValues:
         assert "ppr=0" in req.url
 
     @responses.activate
-    def test_fetch_values_http_error(self):
+    def test_fetch_values_uses_cache_when_enabled(self, tmp_path: Path):
+        cache = FantasyCalcCache(tmp_path)
+        cache.save(
+            is_dynasty=True,
+            num_qbs=2,
+            num_teams=12,
+            ppr=1,
+            values=SAMPLE_VALUES,
+        )
+
+        client = FantasyCalcClient(cache=cache)
+        result, source = client.fetch_values()
+
+        assert result == SAMPLE_VALUES
+        assert source == "cache"
+        assert len(responses.calls) == 0
+
+    @responses.activate
+    def test_fetch_values_falls_back_to_stale_cache(self, tmp_path: Path):
+        cache = FantasyCalcCache(tmp_path)
+        cache_path = cache.save(
+            is_dynasty=True,
+            num_qbs=2,
+            num_teams=12,
+            ppr=1,
+            values=SAMPLE_VALUES,
+        )
+        cache_path.touch()
+
+        responses.add(
+            responses.GET,
+            f"{BASE_URL}/values/current",
+            body=requests.ConnectionError("boom"),
+        )
+
+        client = FantasyCalcClient(cache=cache, retries=0)
+        result, source = client.fetch_values(cache_ttl=0)
+
+        assert result == SAMPLE_VALUES
+        assert source == "stale-cache"
+
+    @responses.activate
+    def test_fetch_values_http_error(self, tmp_path: Path):
         responses.add(
             responses.GET,
             f"{BASE_URL}/values/current",
@@ -119,9 +210,22 @@ class TestFetchValues:
             status=500,
         )
 
-        client = FantasyCalcClient()
-        with pytest.raises(Exception):
-            client.fetch_values()
+        client = FantasyCalcClient(cache=FantasyCalcCache(tmp_path), retries=0)
+        with pytest.raises(FantasyCalcRequestError, match="HTTP 500"):
+            client.fetch_values(use_cache=False)
+
+    @responses.activate
+    def test_fetch_values_invalid_payload(self, tmp_path: Path):
+        responses.add(
+            responses.GET,
+            f"{BASE_URL}/values/current",
+            json={"players": []},
+            status=200,
+        )
+
+        client = FantasyCalcClient(cache=FantasyCalcCache(tmp_path), retries=0)
+        with pytest.raises(FantasyCalcRequestError, match="unexpected response format"):
+            client.fetch_values(use_cache=False)
 
 
 # ------------------------------------------------------------------
@@ -149,9 +253,13 @@ class TestSearchPlayer:
         assert results == []
 
     def test_multiple_matches(self):
-        # Both names contain "a"
         results = FantasyCalcClient.search_player("a", SAMPLE_VALUES)
         assert len(results) >= 2
+
+    def test_exact_flag(self):
+        results = FantasyCalcClient.search_player("patrick mahomes", SAMPLE_VALUES, exact=True)
+        assert len(results) == 1
+        assert FantasyCalcClient.search_player("patrick", SAMPLE_VALUES, exact=True) == []
 
 
 # ------------------------------------------------------------------
@@ -165,7 +273,6 @@ class TestBuildPlatformIndex:
         assert "14839" in index
         assert "16640" in index
         assert "17001" in index
-        # Sam LaPorta has no fleaflickerId
         assert len(index) == 3
 
     def test_sleeper_index(self):
